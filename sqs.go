@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -8,6 +9,66 @@ import (
 	"github.com/aws/aws-sdk-go/service/sns"
 	"github.com/aws/aws-sdk-go/service/sqs"
 )
+
+type PolicyDocument struct {
+	Version   string
+	Id        string
+	Statement []StatementEntry
+}
+
+type StatementEntry struct {
+	Effect    string
+	Principal string
+	Action    []string
+	Resource  *string
+	Condition ConditionEntry
+}
+
+type ConditionEntry struct {
+	ArnEquals map[string]*string
+}
+
+func addPolicy(svc *sqs.SQS, queueUrl, queueARN, topicARN *string) error {
+	policy := PolicyDocument{
+		Version: "2012-10-17",
+		Id:      fmt.Sprintf("%v/sqs-sns-write-policy", *queueARN),
+		Statement: []StatementEntry{
+			{
+				Effect:    "Allow",
+				Principal: "*",
+				Action:    []string{"SQS:SendMessage"},
+				Resource:  queueARN,
+				Condition: ConditionEntry{
+					ArnEquals: map[string]*string{"aws:SourceArn": topicARN},
+				},
+			},
+		},
+	}
+
+	bytes, err := json.Marshal(&policy)
+
+	if err != nil {
+		fmt.Printf("error marshaling policy: %v\n", err)
+		return err
+	}
+
+	fmt.Printf("json payload: %v\n", string(bytes))
+
+	result, err := svc.SetQueueAttributes(&sqs.SetQueueAttributesInput{
+		Attributes: map[string]*string{"Policy": aws.String(string(bytes))},
+		QueueUrl:   queueUrl,
+	})
+
+	if err != nil {
+		fmt.Printf("error setting queue attributes: %v\n", err)
+		return err
+	}
+
+	fmt.Printf("result: %v\n", result)
+
+	return nil
+
+}
 
 func main() {
 	//Create a session object to talk to SNS (also make sure you have your key and secret setup in your .aws/credentials file)
@@ -28,7 +89,7 @@ func main() {
 	sqsSvc := sqs.New(session.New())
 
 	queueIdentifier := sqs.CreateQueueInput{}
-	queueIdentifier.SetQueueName("sqs-test-queue")
+	queueIdentifier.SetQueueName("sqs-test-queue-4")
 	queue, err := sqsSvc.CreateQueue(&queueIdentifier)
 
 	if err != nil {
@@ -77,8 +138,28 @@ func main() {
 
 	fmt.Printf("queue attributes: %v\n", queueAttrs)
 
-	for {
+	err = addPolicy(sqsSvc, queue.QueueUrl, queueAttrs.Attributes["QueueArn"], topic.TopicArn)
 
+	if err != nil {
+		fmt.Printf("error adding policy: %v\n", err)
+		return
+	}
+
+	queueAttrs, err = sqsSvc.GetQueueAttributes(&sqs.GetQueueAttributesInput{
+		AttributeNames: []*string{
+			aws.String(sqs.QueueAttributeNameAll),
+		},
+		QueueUrl: queue.QueueUrl,
+	})
+
+	if err != nil {
+		fmt.Printf("queue attribute error: %v\n", err)
+		return
+	}
+
+	fmt.Printf("queue attributes: %v\n", queueAttrs)
+
+	for {
 		result, err := sqsSvc.ReceiveMessage(&sqs.ReceiveMessageInput{
 			AttributeNames: []*string{
 				aws.String(sqs.MessageSystemAttributeNameSentTimestamp),
