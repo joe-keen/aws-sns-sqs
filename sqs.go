@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	// "github.com/aws-sns-sqs/cncf"
 	"github.com/aws-sns-sqs/sqs"
 )
 
